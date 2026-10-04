@@ -28,3 +28,9 @@ idea, with a flash or a black dip on the switch, its own typography, cards and s
 ## Writing a new look
 Copy `grade_cool` or `grade_noir` in `render.py`, change the numbers, keep the noise seed per frame index. Give it a
 switch sound, one type treatment, one card idea. Add its window to `take_pieces()` so the take gets split at the switch.
+
+## Keep looks restrained (lesson, 2026-10-04)
+The first pass of both looks above read as "way too over the top, no one actually uses those in real life." What real creators
+use is subtler: a light warm lift with one serif-italic word and a couple of sparkles; a moody pass that only pulls exposure and
+saturation down a little and lets big white serif words carry the mood. Halve every departure from the base grade before you
+show a look, and never put a scrapbook of doodles or a black-and-white crush on a talking head unless the reference video does.
