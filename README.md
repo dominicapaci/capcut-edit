@@ -50,6 +50,17 @@ Edit this into a CapCut project. Captions with the keyword in yellow, big word p
 orbiting my head, and when I say "aesthetic" warm the whole look up, then "moody" when I say it.
 ```
 
+Already have an editing style you like? Drop 5 to 10 of your favorite videos in the folder and say:
+
+```
+Go through these frame by frame to understand my style. Pay attention to everything: the camera angles,
+the font, when I cut the video, the sounds I use, everything. Ask any clarifying questions rather than
+assume, and if you need any more files or assets from me, let me know.
+```
+
+Then give it raw footage. Love another creator's editing? Give it a few of their videos or links and say the same
+thing, ending with "then edit my raw footage in that style."
+
 Or, if you already cut the take in CapCut yourself:
 
 ```
@@ -91,6 +102,7 @@ capcut-edit/
   references/looks.md           the two restrained aesthetics (and the two louder ones) as grade numbers + type + sound
   references/motion.md          the breathing camera (measured on top reels), punch-ins, the flicker open
   references/sound.md           use your own CapCut library sounds; pop vs click; typing; levels; the sound-only remix
+  references/style-from-examples.md  how Claude learns your style (or a creator's) from example videos
   references/lessons.md         everything that went wrong once
   scripts/transcribe.py         word timestamps (mlx-whisper / faster-whisper / whisper)
   scripts/cutplan.py            raw take → tight cut (audio-envelope pause trim), or rebuild a CapCut draft's cut

@@ -21,14 +21,16 @@ keyframes. The secret is that a CapCut project is just files on disk (`draft_con
 
 Read `references/capcut-cli.md` before building, `references/safe-zones.md` and `references/captions-and-cards.md`
 before placing anything, `references/looks.md` for the aesthetics, `references/motion.md` for zooms and the flicker,
-`references/sound.md` before touching sound, `references/lessons.md` for everything that went wrong once.
+`references/sound.md` before touching sound, `references/style-from-examples.md` when the user gives example videos,
+`references/lessons.md` for everything that went wrong once.
 
 ## Intake — ask these things, every time
 
 1. **Raw or pre-cut?** Raw take (one long recording with bad takes) → this skill cuts it. Already cut in CapCut →
    read their draft and rebuild from its exact cut points (`cutplan.py from-draft`). Don't guess; ask.
-2. **What should it feel like?** A reference video link beats adjectives. If they name an aesthetic, confirm which
-   reading they mean with one line each (see `looks.md`), then go.
+2. **What should it feel like?** Examples beat adjectives. If they hand you 5–10 of their own videos, or a few from a
+   creator they love, study them frame by frame first and write the style down (`references/style-from-examples.md`).
+   If they only name an aesthetic, confirm which reading they mean with one line each (see `looks.md`), then go.
 3. **A 4K export of the same cut**, if they have one: zooms cropped from 4K stay sharp at 1080 (`motion.md`).
 4. **Which sounds they already use in CapCut.** Run `scripts/capcut_sounds.py`; the names that repeat across their old
    projects are their taste. Never synthesize (`sound.md`).
