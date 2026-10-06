@@ -53,7 +53,9 @@ for st, en, txt, kw in META.get("cues", []):                                   #
     if kw:
         i = txt.lower().find(kw)
         if i >= 0: quiet("text-ranges", P, sid, "--styles", json.dumps([{"start": i, "end": i + len(kw), "font_color": HI, "bold": True}]))
-# scale keyframes: punch-ins (one-frame ramps = holds) and the push-in, on the take piece they fall in and on the cutout
+sfx2 = next((f for f in files if f.startswith("06_")), None)                   # caption ticks: their own track, off by default in the mp4
+if sfx2: run("add-audio", P, f"{L}/{sfx2}", "0s", f"{dur(f'{L}/{sfx2}')}s", "--track-name", "caption ticks", "--volume", "1.0")
+# scale keyframes: the breathing zooms / punches / push as EASED keyframes (zoom_keys), on every take piece they fall in and on the cutout
 segs = json.loads(run("segments", P, "--track", "video"))
 def seg_at(pre, t):
     for s in segs:
@@ -61,13 +63,25 @@ def seg_at(pre, t):
             a = s["start_us"] / 1e6; b = a + s["duration_us"] / 1e6
             if a - 1e-4 <= t < b - 1e-4: return s["id"], a               # a boundary time belongs to the NEXT piece
     return None, None
-events = []
-for a, b, s in META.get("punch", []): events += [(a - F1, 1.0), (a, s), (b, s), (b + F1, 1.0)]
-if META.get("push"): a, b, s = META["push"]; events += [(a, 1.0), (b, s), (b + F1, 1.0)]
+keys = META.get("zoom_keys")
+if not keys:                                                                   # older meta.json: rebuild from punch/push
+    keys = []
+    for a, b, s in META.get("punch", []): keys += [(a - F1, 1.0), (a, s), (b, s), (b + F1, 1.0)]
+    if META.get("push"): a, b, s = META["push"]; keys += [(a, 1.0), (b, s), (b + F1, 1.0)]
+    keys = sorted(keys)
+def zval(t):
+    for (t0, v0), (t1, v1) in zip(keys, keys[1:]):
+        if t0 <= t <= t1: return v0 + (v1 - v0) * ((t - t0) / (t1 - t0) if t1 > t0 else 0)
+    return keys[-1][1] if keys else 1.0
+def pieces(pre): return sorted([(s["id"], s["start_us"] / 1e6, (s["start_us"] + s["duration_us"]) / 1e6) for s in segs if s.get("label", "").startswith(pre)], key=lambda x: x[1])
 for pre in ("01_", "03_"):
-    for t_abs, v in sorted(events):
-        sid, a = seg_at(pre, t_abs)
-        if sid: quiet("keyframe", P, sid, "scale", f"{max(0.0, t_abs - a):.4f}s", f"{v}")
+    for sid, a, b in pieces(pre):
+        local = [(a, zval(a))] + [(t, v) for t, v in keys if a + 1e-4 < t < b - F1] + [(b - F1, zval(b - F1))]
+        if all(abs(v - 1.0) < 1e-4 for _, v in local): continue
+        for t, v in local: quiet("keyframe", P, sid, "scale", f"{max(0.0, t - a):.4f}s", f"{v}", "--easing", "ease-in-out")
 run("register", P, "--apply", "--materials"); run("sync-timelines", P, "--nested", "--apply")
 print(subprocess.run(["capcut", "lint", P, "--fix", "--force-write", "-H"], capture_output=True, text=True).stdout.strip()[-300:])
-print(f"built {P}\nQuit and reopen CapCut to see it. Select the caption clips and pick a heavy sans font.")
+segs2 = json.loads(run("segments", P, "--track", "video")); want = sum(1 for f in files if f[:3] in ("01_", "02_", "03_", "04_")); have = len(segs2)
+print(f"built {P}  ({have}/{want} video clips landed)")
+if have < want: print(f"  {want - have} clips went missing (CapCut was open): run  python3 scripts/fill_project.py <layers dir> \"{NAME}\"")
+print("Quit and reopen CapCut to see it. Select the caption clips and pick a heavy sans font.")

@@ -17,7 +17,7 @@ the footage itself for "looks". Sound is synthesized. Public surface:
 import os, sys, math, re, glob, json, random, subprocess
 from functools import lru_cache
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 # ---------- tokens ----------
 W, H, FPS, SS = 1080, 1920, 30, 2
@@ -185,17 +185,26 @@ def classic_box(lines, dur, cy=330, size=50, fin=0.12, fout=0.12, pad=(44, 22), 
         r.fade(a); return full(r)
     return frame
 def norm(w): return re.sub(r"[^a-z0-9']", "", w.lower())
-def captions(cuelist, dur, cy=1500, size=60, hi=YEL):
-    """word-synced captions: cuelist = [(start, end, text, keyword)], one keyword per cue in the highlight colour."""
+# ---------- safe zones (measured on TikTok; see references/safe-zones.md) ----------
+SAFE = dict(top=260, right_x=880, right_y0=930, bottom=1690, side=40)
+def wrap_words(words, f, maxw):
+    lines = [[]]
+    for w in words:
+        if lines[-1] and twidth(" ".join(lines[-1] + [w]), f) > maxw: lines.append([w])
+        else: lines[-1].append(w)
+    return lines
+def captions(cuelist, dur, cy=1500, size=58, hi=YEL, cx=500, maxw=720):
+    """word-synced captions: cuelist = [(start, end, text, keyword)], one keyword per cue in the highlight colour.
+    Centred at cx=500 and at most maxw=720 wide so they never touch the platform's icon column (x>880)."""
     f = F(size, "heavy")
     def frame(t):
         c = blank()
         for st, en, txt, kw in cuelist:
             if not (st <= t < en): continue
             a = eo3(seg(t, st, st + 0.08)); r = Region(0, cy - 160, W, 320); kws = {norm(k) for k in kw.split()} if kw else set()
-            words = txt.split(); lines = [words] if twidth(txt, f) <= 940 else [words[:len(words) // 2], words[len(words) // 2:]]
+            lines = wrap_words(txt.split(), f, maxw)
             for li, ws in enumerate(lines):
-                line = " ".join(ws); x = 540 - twidth(line, f) / 2; y = cy + (li - (len(lines) - 1) / 2) * (size * 1.27)
+                line = " ".join(ws); x = cx - twidth(line, f) / 2; y = cy + (li - (len(lines) - 1) / 2) * (size * 1.27)
                 for w in ws:
                     col = hi if norm(w) in kws else WHITE
                     r.text((x + 3, y + 6), w, f, (0, 0, 0, 150), anchor="lm"); r.text((x, y), w, f, col, anchor="lm", stroke=2, sfill=(0, 0, 0, 160))
@@ -203,8 +212,10 @@ def captions(cuelist, dur, cy=1500, size=60, hi=YEL):
             r.fade(a); c.alpha_composite(full(r))
         return c
     return frame
-def bigword(text, dur, col=WHITE, y=470, size=170, tracking=-4):
-    """a big single word above the head: scales in from a blur, holds, fades."""
+def bigword(text, dur, col=WHITE, y=430, size=170, tracking=-4, maxw=860):
+    """a big single word above the head: scales in from a blur, holds, fades. Auto-shrinks to maxw so it never runs off the sides."""
+    f0 = FT(SANS, size, SANS_IDX["heavy"]); w0 = sum(f0.getlength(ch) / SS + tracking for ch in text) - tracking
+    if w0 > maxw: size = size * maxw / w0
     def frame(t):
         c = blank(); r = Region(0, y - 200, W, 400); a = eo3(seg(t, 0, 0.10)) * (1 - eio(seg(t, dur - 0.15, dur)))
         if a <= 0.01: return c
@@ -367,17 +378,20 @@ def flash(dur, peak=0.9, col=(255, 250, 244)):
     def frame(t):
         a = peak * (1 - eo3(seg(t, 0, dur))); return Image.new("RGBA", (W, H), (*col, int(255 * a)))
     return frame
-def serif_slide(text, dur, y=1400, size=170, caps=None, caps_at=0.0):
-    """huge serif italic word sliding in from the right with a blur-in, drifting slowly; tiny tracked caps beneath."""
-    fi = f_serif_b(size); fc = F(26, "demi")
+def serif_slide(text, dur, y=1400, size=170, caps=None, caps_at=0.0, cx=470, maxw=790):
+    """huge serif italic word sliding in from the right with a blur-in, drifting slowly; tiny tracked caps beneath.
+    Centred at cx=470 and auto-fit to maxw so it clears the icon column on the right."""
+    fi = f_serif_b(size); tw0 = twidth(text, fi)
+    if tw0 > maxw: size = size * maxw / tw0; fi = f_serif_b(size)
+    fc = F(26, "demi")
     def frame(t):
         c = blank(); r = Region(0, y - 220, W, 440); a = eo3(seg(t, 0, 0.14)) * (1 - eio(seg(t, dur - 0.18, dur)))
         if a <= 0.01: return c
-        x = 540 + 110 * (1 - eo3(seg(t, 0, 0.55))) - 28 * c01(t / max(dur, 0.1))
+        x = cx + 90 * (1 - eo3(seg(t, 0, 0.55))) - 24 * c01(t / max(dur, 0.1))
         r.text((x + 5, y + 7), text, fi, (0, 0, 0, 140)); r.text((x, y), text, fi, (244, 244, 246, 255))
         if caps and t >= caps_at:
             ca = eo3(seg(t, caps_at, caps_at + 0.3))
-            if ca > 0.01: r.text((540, y + 118), caps, fc, A((225, 225, 230, 255), ca))
+            if ca > 0.01: r.text((cx, y + 118), caps, fc, A((225, 225, 230, 255), ca))
         im = r.out(); br = 12 * (1 - eo3(seg(t, 0, 0.3)))
         if br > 0.5: im = im.filter(ImageFilter.GaussianBlur(br))
         if a < 1: im.putalpha(im.getchannel("A").point(lambda v: int(v * a)))
@@ -422,6 +436,91 @@ def timeline_card(dur, t_fly, label="4 hours of cutting", cy=520):
         place(c, shadowed(card(r.out().convert("RGB"), 22)), (540 + 900 * fl, cy - 40 * fl), s, 0.5 - 10 * fl, a * (1 - fl)); return c
     return frame
 
+def classic_pop(lines, dur, cy=415, size=50):
+    """the opening blurb popping in (scale overshoot + quick fade) instead of being on from frame zero."""
+    full_im = classic_box(lines, 10, cy=cy, size=size, fin=0.0, fout=0.0)(1.0); bb = full_im.getbbox(); still = full_im.crop(bb)
+    ctr = ((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2)
+    def frame(t):
+        sc, a = pop(t, 0.0, dur); c = blank(); place(c, still, ctr, sc, 0, a); return c
+    return frame
+def make_reel_card(cover_path, count_text, out_path, size=(404, 542)):
+    """a phone-card image from a real cover: the cover's top, a dark fade, a play triangle and the real view count."""
+    im = Image.open(cover_path).convert("RGB"); im = im.resize((size[0], int(im.height * size[0] / im.width)), Image.LANCZOS).crop((0, 0, size[0], size[1]))
+    sh = Image.new("RGBA", im.size, (0, 0, 0, 0)); d = ImageDraw.Draw(sh)
+    for y in range(size[1] - 142, size[1]): d.line([(0, y), (size[0], y)], fill=(0, 0, 0, int(170 * (y - (size[1] - 142)) / 142)))
+    im = Image.alpha_composite(im.convert("RGBA"), sh); d = ImageDraw.Draw(im); f = FT(SANS, 44 / SS, SANS_IDX["heavy"])
+    d.polygon([(26, size[1] - 64), (26, size[1] - 20), (62, size[1] - 42)], fill=(255, 255, 255, 255)); d.text((80, size[1] - 42), count_text, font=f, fill=(255, 255, 255, 255), anchor="lm")
+    im.convert("RGB").save(out_path); return out_path
+def reel_orbit(paths, dur, half, cx=480, cy=1040, rx=250, ry=250, rate=24.0, w=250):
+    """four of the person's own videos on a slow merry-go-round round the head. Render it TWICE: half="back" gives the
+    cards with z<0 (behind the head, layer="back"), half="front" the cards with z>=0 (over the chest, layer="front")."""
+    L = [phone(p, w) for p in paths]; ang0 = [315, 135, 45, 225][:len(L)]
+    def frame(t):
+        c = blank()
+        for i, (lay, a0) in enumerate(zip(L, ang0)):
+            s_in, a_in = pop(t, 0.14 * i, dur)
+            if a_in <= 0.01: continue
+            a = math.radians(a0 + rate * t); z = math.cos(a)
+            if (z < 0) != (half == "back"): continue
+            x = cx + rx * math.sin(a); y = cy + ry * z; sc = 0.84 + 0.16 * (z + 1) / 2
+            place(c, lay, (x, y), s_in * sc, 7 * math.sin(a), a_in)
+        return c
+    return frame
+def before_after(raw_im, edited_im, dur, cy=690, xs=(250, 830), labels=("raw take", "20 minutes later"), hi=YEL, tile=(270, 480)):
+    """two tiles of the person's own frames (behind the head); labels and an arrow ABOVE them so they stay visible."""
+    tl = [shadowed(card(im.resize(tile, Image.LANCZOS), 24)) for im in (raw_im, edited_im)]; fl = F(24, "heavy")
+    def frame(t):
+        c = blank()
+        for k, (x, tilt, st, lab, col) in enumerate([(xs[0], -4, 0.0, labels[0], (220, 220, 226, 255)), (xs[1], 4, 0.18, labels[1], hi)]):
+            sc, a = pop(t, st, dur)
+            if a <= 0.01: continue
+            place(c, tl[k], (x, cy), sc, tilt, a)
+            r = Region(x - 200, cy - 320, 400, 70); w2 = twidth(lab, fl) + 40
+            r.rr((x - w2 / 2, cy - 310, x + w2 / 2, cy - 262), 24, fill=(20, 20, 24, int(220 * a))); r.text((x, cy - 286), lab, fl, A(col, a)); c.alpha_composite(full(r))
+        ar = eob(seg(t, 0.3, 0.6))
+        if ar > 0.01:
+            ya = cy - 286; r = Region(400, ya - 40, 300, 80); r.line([(430, ya), (640, ya)], A(WHITE, ar), 8); r.poly([(656, ya), (628, ya - 20), (628, ya + 20)], fill=A(WHITE, ar)); c.alpha_composite(full(r))
+        return c
+    return frame
+def paywall_card(dur, t_free, title="The Course", cy=440, sc=0.8, locked="members only"):
+    """a paywalled card whose lock row sits at the TOP (stays visible), unlocking on t_free."""
+    def frame(t):
+        c = blank(); s, a = pop(t, 0, dur)
+        if a <= 0.01: return c
+        fr_ = eob(seg(t, t_free, t_free + 0.35)); r = Region(0, 0, 700, 440)
+        r.rr((0, 0, 700, 440), 26, fill=(246, 246, 248, 255), outline=(200, 200, 206, 255), width=2)
+        r.rr((0, 0, 700, 200), 26, fill=WHITE); r.rr((0, 170, 700, 200), 0, fill=WHITE)
+        if fr_ <= 0.01: lock(r, (120, 100), 1.6, (90, 90, 96, 255)); r.text((420, 100), locked, F(32, "heavy"), (90, 90, 96, 255))
+        else:
+            sh = (1 - fr_) * 20 * math.sin(t * 50); r.rr((60, 64, 180, 136), 36, fill=A(GREEN, fr_)); check(r, (120 + sh, 100), 34 * fr_, WHITE, 8)
+            r.text((420, 100), "free", F(40 * (0.8 + 0.2 * fr_), "heavy"), A(GREEN, fr_))
+        r.text((40, 250), title, F(28, "heavy"), (60, 60, 66, 255), anchor="lm")
+        for k in range(4): r.rr((40, 290 + k * 32, 40 + [480, 560, 420, 500][k], 306 + k * 32), 6, fill=(205, 205, 210, 255))
+        place(c, shadowed(card(r.out().convert("RGB"), 26)), (540, cy), s * sc, -1.5 + 1.5 * fr_, a); return c
+    return frame
+def screen_card(frames_dir, dur, cx=470, cy=1400, w=920, sc=0.86):
+    """REAL screen footage (frames from the user's own screen recording, cropped to the editor's timeline band) as a card."""
+    fs = sorted(glob.glob(f"{frames_dir}/*.jpg")); cache = {}
+    def real(i):
+        if i not in cache:
+            im = Image.open(fs[min(len(fs) - 1, i)]).convert("RGB"); im = im.resize((w, int(im.height * w / im.width)), Image.LANCZOS); cache[i] = card(im, 24)
+        return cache[i]
+    def frame(t):
+        c = blank(); s, a = pop(t, 0, dur)
+        if a <= 0.01 or not fs: return c
+        place(c, shadowed(real(int(t * FPS)), 14, 0.5), (cx, cy), s * sc, 0.6 * math.sin(2 * math.pi * t / 4.3), a); return c
+    return frame
+def static_flash(dur, peak=0.45):
+    """a few frames of film static over a flicker (the sound is the real thing from the library)"""
+    rnd = np.random.RandomState(21)
+    def frame(t):
+        a = peak * (1 - seg(t, dur * 0.6, dur)); n = rnd.randint(0, 255, (H // 4, W // 4), dtype=np.uint8)
+        im = Image.fromarray(n).resize((W, H), Image.NEAREST).convert("RGBA"); im.putalpha(int(255 * a * 0.3)); return im
+    return frame
+def invert_person(rgb, mask):
+    """the flicker's negative: a washed white inversion of the person only."""
+    inv = ImageOps.invert(rgb).point(lambda v: int(v * 0.45 + 140)); return Image.composite(inv, rgb, mask)
+
 # ---------- grades (apply to the take AND the cutout, same function, same seed) ----------
 _yy, _xx = np.mgrid[0:H, 0:W].astype(np.float32)
 _rad = np.sqrt(((_xx - W / 2) / (W / 2)) ** 2 + ((_yy - H / 2) / (H / 2)) ** 2)
@@ -446,7 +545,19 @@ def grade_noir(arr, i, t):
     a = (a - 30.0) * 1.18; a[..., 0] *= 0.94; a[..., 1] *= 0.98; a[..., 2] *= 1.06; a *= VIG_HARD
     a *= 1.0 + 0.03 * math.sin(2 * math.pi * 9.3 * t) + 0.015 * math.sin(2 * math.pi * 23.0 * t + 1.0)
     a += np.random.RandomState(i + 7).randn(H, W, 1).astype(np.float32) * 7.0; return np.clip(a, 0, 255).astype(np.uint8)
-GRADES = {"base": grade_base, "cool": grade_cool, "noir": grade_noir, None: None}
+def _lum(a): return (a[..., 0] * 0.3 + a[..., 1] * 0.59 + a[..., 2] * 0.11)[..., None]
+def grade_soft(arr, i, t, k=1.0):
+    """the restrained warm look: a light lift and a warm cast, strength k (ramp it so the viewer watches it warm up)."""
+    a = grade_base(arr, i, t).astype(np.float32); a = a * (1 - 0.05 * k) + 12 * k
+    a[..., 0] += 9 * k; a[..., 1] += 3 * k; a[..., 2] -= 7 * k; g = _lum(a); a = g + (a - g) * (1 - 0.05 * k)
+    return np.clip(a, 0, 255).astype(np.uint8)
+def grade_moody(arr, i, t, k=1.0):
+    """the restrained moody look: exposure down a touch, ~70% saturation, a little contrast, a touch cold. Still colour."""
+    a = grade_base(arr, i, t).astype(np.float32); a *= 1 - 0.16 * k; a = (a - 90) * (1 + 0.10 * k) + 90
+    g = _lum(a); a = g + (a - g) * (1 - 0.32 * k); a[..., 0] *= 1 - 0.03 * k; a[..., 2] *= 1 + 0.03 * k
+    a *= np.clip(1.0 - 0.12 * k * np.clip(_rad - 0.6, 0, 1.2), 0, 1)[..., None]
+    return np.clip(a, 0, 255).astype(np.uint8)
+GRADES = {"base": grade_base, "cool": grade_cool, "noir": grade_noir, "soft": grade_soft, "moody": grade_moody, None: None}
 
 # ---------- sound ----------
 SR_HZ = 48000
@@ -472,15 +583,51 @@ def snd_whoosh():
     x = np.convolve(x, np.ones(k) / k, "same") - np.convolve(x, np.ones(k * 6) / (k * 6), "same"); return x * np.sin(np.pi * np.clip(t / 0.55, 0, 1)) ** 2 * 2.2
 def snd_tick():
     n = int(SR_HZ * 0.03); t = np.arange(n) / SR_HZ; rnd = np.random.RandomState(4); return (rnd.randn(n) * np.exp(-t / 0.0012) * 0.6 + tone_n(2600, n, 0.003, 0.3)) * 0.45
+def load_wav(path):
+    """any wav/mp3-decoded wav: mono-summed, resampled to SR_HZ, peak-normalised."""
+    import wave
+    with wave.open(path, "rb") as w:
+        sr = w.getframerate(); ch = w.getnchannels(); sw = w.getsampwidth(); raw = w.readframes(w.getnframes())
+    dt = {1: np.int8, 2: np.int16, 4: np.int32}[sw]; a = np.frombuffer(raw, dtype=dt).astype(np.float32) / float(2 ** (8 * sw - 1))
+    if ch > 1: a = a.reshape(-1, ch).mean(1)
+    if sr != SR_HZ: a = np.interp(np.arange(0, len(a), sr / SR_HZ), np.arange(len(a)), a)
+    return a / (np.abs(a).max() + 1e-6)
+def snd_file(path, gain=1.0, trim=None, fade=0.05):
+    """a real library sound as an SND entry: snd_file("assets/sfx_pop.wav") → callable; trim (s) cuts the tail, fade (s) fades it."""
+    def fn():
+        a = load_wav(path).copy()
+        if trim: a = a[: int(SR_HZ * trim)]
+        n = int(SR_HZ * fade)
+        if len(a) > 2 * n: a[-n:] *= np.linspace(1, 0, n)
+        return a * gain
+    return fn
+def slice_transients(path, max_t=0.6, thresh=0.07, min_gap=0.03, length=0.045):
+    """cut the individual hits (keystrokes) out of a short recording; returns a list of arrays."""
+    a = load_wav(path); win = int(SR_HZ * 0.003); e = np.convolve(np.abs(a), np.ones(win) / win, "same"); th = e.max() * thresh
+    starts = []; i = 0
+    while i < len(e):
+        if e[i] > th: starts.append(i); i += int(SR_HZ * min_gap)
+        else: i += 1
+    keys = [a[max(0, s - int(SR_HZ * 0.002)): s + int(SR_HZ * length)].copy() for s in starts if s / SR_HZ < max_t]
+    for k in keys: k[-int(SR_HZ * 0.01):] *= np.linspace(1, 0, int(SR_HZ * 0.01))
+    return keys
+def typing_run(keys, n, gap, seed=11):
+    """n keystrokes from the sliced hits, shuffled, with a little timing jitter: a typed string's sound."""
+    rnd = np.random.RandomState(seed); out = np.zeros(int(SR_HZ * (n * gap + 0.1))); t = 0.0
+    for _ in range(n):
+        k = keys[rnd.randint(len(keys))] * rnd.uniform(0.7, 1.0); i = int(t * SR_HZ); seg_ = k[: len(out) - i]; out[i:i + len(seg_)] += seg_; t += gap * rnd.uniform(0.75, 1.25)
+    return out / (np.abs(out).max() + 1e-6)
+# Default roles → synthesized fallbacks. REPLACE these with the editor's own library sounds (see references/sound.md):
+#   SND.update({"pop": (snd_file("assets/sfx_pop.wav"), 0.40), "click": (snd_file("assets/sfx_click.wav"), 0.35), ...})
 SND = {"tap": (snd_tap, 0.5), "click": (snd_click, 0.7), "pop": (snd_pop, 0.6), "sparkle": (snd_sparkle, 0.55), "bass": (snd_bass, 0.8), "whoosh": (snd_whoosh, 0.5), "tick": (snd_tick, 0.5)}
 def mix_track(dur, events):
     out = np.zeros(int(SR_HZ * dur) + 1)
     for t0, sig, g in events:
         i = int(t0 * SR_HZ); j = min(len(out), i + len(sig)); out[i:j] += sig[:j - i] * g
     return out
-def write_wav(path, sig):
+def write_wav(path, sig, master=0.4):
     import wave
-    pcm = (np.clip(sig * 0.5, -1, 1) * 32767).astype("<i2")
+    pcm = (np.clip(sig * master, -1, 1) * 32767).astype("<i2")
     with wave.open(path, "wb") as w: w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR_HZ); w.writeframes(np.repeat(pcm[:, None], 2, axis=1).tobytes())
 
 # ---------- output ----------
@@ -505,9 +652,17 @@ class Edit:
         self.masks = f"{work}/masks_fixed" if os.path.isdir(f"{work}/masks_fixed") else f"{work}/masks"
         self.nfr = len(glob.glob(f"{self.frames}/*.jpg")); self.dur = self.nfr / FPS
         self.segs = json.load(open(f"{work}/segments.json")) if os.path.exists(f"{work}/segments.json") else None
-        self.windows = windows or {}          # {"cool": (a, b), "noir": (a, b)} → GRADES
-        self.push = push                      # (a, b, scale) slow push-in window
+        self.windows = windows or {}          # {"soft": (a, b), "moody": (a, b)} → GRADES
+        self.ramps = {}                       # {"soft": (t0, t1)}: the look's strength k ramps 0.35→1 (soft) / 0.5→1 (moody) across t0..t1
+        self.push = push                      # (a, b, scale): a slow creep across a whole section
+        self.breath = []                      # [(start, peak_at, hold_until, back_by, scale)]: the breathing camera (motion.md)
         self.punch = []; self.clips = []; self.cuelist = []; self.blurb = None
+        self.bw = None                        # (a, b): black-and-white frames on a warning word
+        self.flicker = {}                     # {frame index: "P" (empty-room plate) | "I" (inverted person)}: the flicker open (motion.md)
+        self.plate = None                     # PIL image of the empty room, 1080x1920, for the "P" frames
+        self.video4k = f"{work}/take_4k.mp4" if os.path.exists(f"{work}/take_4k.mp4") else None   # zoom crops from 4K stay sharp
+        self.frames4k = f"{work}/frames4k" if os.path.isdir(f"{work}/frames4k") else None
+        self.sfx_mute_ticks = True            # caption ticks render to their own wav but stay out of the flattened mp4
         self.words = []
         for ln in open(f"{work}/words/words.txt"):
             p = ln.split()
@@ -537,32 +692,71 @@ class Edit:
     def add(self, name, t0, t1, make, sfx=None, note="", layer="front"):
         t1 = min(t1, self.dur); self.clips.append(dict(name=name, layer=layer, t0=t0, dur=t1 - t0, fn=make(t1 - t0), sfx=sfx, note=note))
     def scale(self, t):
+        z = 1.0
         for a, b, s in self.punch:
-            if a <= t < b: return s
-        if self.push and self.push[0] <= t < self.push[1]: return 1.0 + (self.push[2] - 1.0) * (t - self.push[0]) / (self.push[1] - self.push[0])
+            if a <= t < b: z *= s
+        if self.push and self.push[0] <= t < self.push[1]: z *= 1.0 + (self.push[2] - 1.0) * (t - self.push[0]) / (self.push[1] - self.push[0])
+        for a, b, c, d, s in self.breath:
+            if a <= t < d:
+                if t < b: z *= 1 + (s - 1) * eio(seg(t, a, b))
+                elif t < c: z *= s
+                else: z *= 1 + (s - 1) * (1 - eio(seg(t, c, d)))
+        return z
+    def zoom_keys(self):
+        """(time, scale) pairs for the project's eased scale keyframes: every breath/punch/push edge."""
+        ks = {0.0, self.dur - 1 / FPS}
+        for b in self.breath: ks |= set(b[:4])
+        for a, b, s in self.punch: ks |= {a - 1 / FPS, a, b - 1 / FPS, b}
+        if self.push: ks |= {self.push[0], self.push[1] - 1 / FPS, self.push[1]}
+        return [(round(k, 4), round(self.scale(k), 4)) for k in sorted(ks) if 0 <= k < self.dur]
+    def look_k(self, name, t):
+        a, b = self.windows[name]
+        if not (a <= t < b): return 0.0
+        if name in self.ramps: lo = 0.35 if name == "soft" else 0.5; return lo + (1 - lo) * eio(seg(t, *self.ramps[name]))
         return 1.0
-    def graded(self, fr, i):
+    def graded(self, fr, i, override=None):
         t = i / FPS; arr = np.asarray(fr)
+        if self.bw and self.bw[0] <= t < self.bw[1] and override is None:
+            a = grade_base(arr, i, t).astype(np.float32); return Image.fromarray(np.repeat(_lum(a), 3, axis=-1).astype(np.uint8))
         for name, (a, b) in self.windows.items():
-            if a <= t < b and GRADES.get(name): return Image.fromarray(GRADES[name](arr, i, t))
+            k = 1.0 if override == name else (0.0 if override else self.look_k(name, t))
+            if k > 0 and GRADES.get(name):
+                g = GRADES[name]
+                try: return Image.fromarray(g(arr, i, t, k))
+                except TypeError: return Image.fromarray(g(arr, i, t))
         return Image.fromarray(grade_base(arr, i, t)) if GRADES["base"] else fr
-    def load(self, i): return self.graded(Image.open(f"{self.frames}/{i + 1:05d}.jpg").convert("RGB"), i)
+    def raw(self, i, size=(W, H), src4k=False):
+        im = Image.open(f"{self.frames4k if src4k else self.frames}/{i + 1:05d}.jpg").convert("RGB")
+        return im if im.size == size else im.resize(size, Image.LANCZOS)
+    def load(self, i, override=None):
+        """the graded take frame i (no zoom) with the flicker frames baked in."""
+        k = self.flicker.get(i); im = self.raw(i)
+        if k == "P" and self.plate is not None: im = self.plate
+        elif k == "I": im = invert_person(im, self.load_mask(i))
+        return self.graded(im, i, override)
     def load_mask(self, i):
-        LUT = [0 if v < 100 else min(255, int((v - 100) * 1.9)) for v in range(256)]
-        return Image.open(f"{self.masks}/{i + 1:05d}.png").convert("L").point(LUT).filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(1.1))
+        """a HARD mask: cut at 60, grown 1 px, barely blurred. Occlusion is binary (captions-and-cards.md)."""
+        LUT = [0 if v < 60 else 255 for v in range(256)]
+        return Image.open(f"{self.masks}/{i + 1:05d}.png").convert("L").point(LUT).filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.GaussianBlur(0.7))
     @staticmethod
     def zoom(im, s, rs):
         if s <= 1.0001: return im
         w, h = W / s, H / s; return im.resize((W, H), rs, box=(int((W - w) / 2), int((H - h) / 2), int((W + w) / 2), int((H + h) / 2)))
-    def compose(self, i):
-        t = i / FPS; s = self.scale(t); fr = self.zoom(self.load(i), s, Image.LANCZOS); out = fr.convert("RGBA")
-        back = [c for c in self.clips if c["layer"] == "back"]
-        for c in back:
-            if c["t0"] <= t < c["t0"] + c["dur"]: out.alpha_composite(c["fn"](t - c["t0"]))
-        if back and os.path.isdir(self.masks):
-            p = fr.convert("RGBA"); p.putalpha(self.zoom(self.load_mask(i), s, Image.BILINEAR)); out.alpha_composite(p)
+    def zoomed_take(self, i):
+        """the take frame zoomed by scale(t); cropped from the 4K frames when they exist (a 1.2x punch stays sharp)."""
+        t = i / FPS; s = self.scale(t)
+        if self.frames4k and i not in self.flicker:
+            im = Image.open(f"{self.frames4k}/{i + 1:05d}.jpg").convert("RGB"); w4, h4 = im.size; w, h = w4 / s, h4 / s
+            im = im.resize((W, H), Image.LANCZOS, box=((w4 - w) / 2, (h4 - h) / 2, (w4 + w) / 2, (h4 + h) / 2)); return self.graded(im, i)
+        return self.zoom(self.load(i), s, Image.LANCZOS)
+    def compose(self, i, skip=()):
+        t = i / FPS; s = self.scale(t); out = self.zoomed_take(i).convert("RGBA")
+        back = [c for c in self.clips if c["layer"] == "back" and c["name"] not in skip and c["t0"] <= t < c["t0"] + c["dur"]]
+        for c in back: out.alpha_composite(c["fn"](t - c["t0"]))
+        if back and os.path.isdir(self.masks):                       # him, fully opaque, over every back card
+            p = self.zoom(self.load(i), s, Image.LANCZOS).convert("RGBA"); p.putalpha(self.zoom(self.load_mask(i), s, Image.BILINEAR)); out.alpha_composite(p)
         for c in self.clips:
-            if c["layer"] != "back" and c["t0"] <= t < c["t0"] + c["dur"]: out.alpha_composite(c["fn"](t - c["t0"]))
+            if c["layer"] != "back" and c["name"] not in skip and c["t0"] <= t < c["t0"] + c["dur"]: out.alpha_composite(c["fn"](t - c["t0"]))
         return out.convert("RGB")
     def times(self):
         print(f"cut {self.dur:.2f}s  windows {self.windows}")
@@ -571,7 +765,11 @@ class Edit:
     def check(self, ts, path=None, cols=9):
         rows = (len(ts) + cols - 1) // cols; sheet = Image.new("RGB", (cols * 330, rows * 580), (40, 40, 40))
         for k, t in enumerate(ts):
-            im = self.compose(min(self.nfr - 1, max(0, int(t * FPS)))).resize((324, 576), Image.LANCZOS); sheet.paste(im, ((k % cols) * 330 + 3, (k // cols) * 580 + 2))
+            im = self.compose(min(self.nfr - 1, max(0, int(t * FPS)))).convert("RGBA")
+            zn = Image.new("RGBA", (W, H), (0, 0, 0, 0)); zd = ImageDraw.Draw(zn); red = (255, 40, 40, 70)          # the platform's no-go zones (safe-zones.md)
+            zd.rectangle((0, 0, W, SAFE["top"]), fill=red); zd.rectangle((SAFE["right_x"], SAFE["right_y0"], W, 1900), fill=red); zd.rectangle((0, SAFE["bottom"], W, H), fill=red)
+            zd.rectangle((0, 0, SAFE["side"], H), fill=red); zd.rectangle((W - SAFE["side"], 0, W, H), fill=red)
+            im.alpha_composite(zn); im = im.convert("RGB").resize((324, 576), Image.LANCZOS); sheet.paste(im, ((k % cols) * 330 + 3, (k // cols) * 580 + 2))
             ImageDraw.Draw(sheet).text(((k % cols) * 330 + 8, (k // cols) * 580 + 6), f"{t:.2f}", fill=(255, 255, 0))
         path = path or f"{self.work}/check.jpg"; sheet.save(path, quality=86); print("wrote", path)
     def sfx_events(self):
@@ -581,23 +779,71 @@ class Edit:
             for off, kind in ([(0.0, c["sfx"])] if isinstance(c["sfx"], str) else c["sfx"]):
                 fn, g = SND[kind]; ev.append((c["t0"] + off, fn(), g))
         return ev
+    def caption_tick_events(self): return [(st, SND["tick"][0](), 0.22) for st, en, txt, kw in self.cuelist]
+    def voice_src(self): return self.video4k or self.video
+    def final_path(self): return f"{self.out}/FINAL.mp4"
+    def sound(self):
+        """re-mix the effects onto the EXISTING picture (no frame re-rendered, ~2 s) and push the wav into the CapCut project's own copy."""
+        out = self.final_path(); sfx = f"{self.work}/sfx.wav"; write_wav(sfx, mix_track(self.dur, self.sfx_events())); tmp = f"{self.out}/.remix.mp4"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", out, "-i", self.voice_src(), "-i", sfx, "-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:normalize=0[a]",
+                        "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-shortest", "-movflags", "+faststart", tmp], check=True)
+        os.replace(tmp, out); print("re-mixed", out)
+        LD = f"{self.out}/capcut_layers"
+        if os.path.isdir(LD): write_wav(f"{LD}/05_00.00s_SFX.wav", mix_track(self.dur, self.sfx_events()))
+        import shutil
+        for proj in glob.glob(os.path.expanduser("~/Movies/CapCut/User Data/Projects/com.lveditor.draft/*/assets/audio/05_00.00s_SFX.wav")):
+            if os.path.exists(f"{self.work}/sfx.wav") and os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(proj)))) == getattr(self, "project_name", None):
+                shutil.copy(f"{self.work}/sfx.wav", proj); print("copied into", proj)
+    def head(self, until):
+        """re-render only the opening (frames 0..until s) and splice it onto the existing picture; sound untouched (~30 s)."""
+        n = int(round(until * FPS)) + 2; out = self.final_path(); hv = f"{self.out}/.head.mp4"; tmp = f"{self.out}/.spliced.mp4"
+        pipe(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "16", "-pix_fmt", "yuv420p", hv],
+             lambda i: self.compose(i).tobytes(), n)
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", hv, "-i", out, "-filter_complex", f"[1:v]trim=start_frame={n},setpts=PTS-STARTPTS[rest];[0:v][rest]concat=n=2:v=1:a=0[v]",
+                        "-map", "[v]", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags", "+faststart", tmp], check=True)
+        os.replace(tmp, out); os.remove(hv); print("spliced a new opening,", n, "frames")
+    def audition(self, candidates, path=None):
+        """SOUND_AUDITION.mp4: each (label, path) plays twice with its name on screen, so the user can pick sounds by ear."""
+        sig = [np.zeros(SR_HZ // 2)]; t = 0.5; labels = []
+        for lab, p_ in candidates:
+            a = load_wav(p_)[: int(SR_HZ * 2.0)] * 0.5; st = t
+            for _ in range(2): sig.append(a); sig.append(np.zeros(int(SR_HZ * 0.45))); t += len(a) / SR_HZ + 0.45
+            sig.append(np.zeros(SR_HZ // 2)); t += 0.5; labels.append((st, t, lab))
+        wav = f"{self.work}/audition.wav"; write_wav(wav, np.concatenate(sig), master=1.0)
+        f1 = F(54, "heavy"); f2 = F(40, "demi"); n = int(t * 10)
+        def fr(i):
+            tt = i / 10; r = Region(0, 0, W, H); r.rr((0, 0, W, H), 0, fill=(18, 18, 22, 255)); r.text((540, 200), "SOUND AUDITION", f1, YEL); y = 400
+            for st, en, lab in labels: on = st <= tt < en; r.text((80, y), ("▶ " if on else "   ") + lab, f2, WHITE if on else (90, 90, 96, 255), anchor="lm"); y += 78
+            return r.out().convert("RGB").tobytes()
+        out = path or f"{self.out}/SOUND_AUDITION.mp4"
+        pipe(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", "10", "-i", "-", "-i", wav, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", out], fr, n)
+        print("wrote", out)
     def preview(self, path=None):
-        sfx = f"{self.work}/sfx.wav"; write_wav(sfx, mix_track(self.dur, self.sfx_events())); out = path or f"{self.out}/PREVIEW.mp4"
-        pipe(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-", "-i", self.video, "-i", sfx,
+        sfx = f"{self.work}/sfx.wav"; write_wav(sfx, mix_track(self.dur, self.sfx_events() + ([] if self.sfx_mute_ticks else self.caption_tick_events()))); out = path or self.final_path()
+        pipe(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-", "-i", self.voice_src(), "-i", sfx,
               "-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:normalize=0[a]", "-map", "0:v", "-map", "[a]",
-              "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out],
+              "-c:v", "libx264", "-preset", "medium", "-crf", "16", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", "-shortest", "-movflags", "+faststart", out],
              lambda i: self.compose(i).tobytes(), self.nfr)
         print("wrote", out)
     def take_pieces(self):
         """the take track: one piece per cut point, split again where a look window starts or ends."""
-        if self.segs: tl = []; acc = 0.0
-        else: return [(0.0, self.dur, "")]
-        for a, b in self.segs: tl.append((acc, acc + (b - a))); acc += b - a
-        cuts = sorted({x for ab in self.windows.values() for x in ab}); pieces = []
+        tl = []; acc = 0.0
+        for a, b in (self.segs or [(0.0, self.dur)]): tl.append((acc, acc + (b - a))); acc += b - a      # pre-cut export with no cut list: one piece, still split at the looks
+        cuts = {x for ab in self.windows.values() for x in ab}
+        if self.bw: cuts |= set(self.bw)
+        if self.flicker:
+            fr_ = sorted(self.flicker); runs = []
+            for f in fr_:
+                if runs and f == runs[-1][1] + 1: runs[-1][1] = f
+                else: runs.append([f, f])
+            for a_, b_ in runs: cuts |= {a_ / FPS, (b_ + 1) / FPS}
+        cuts = sorted(cuts); pieces = []
         for a, b in tl:
             pts = [a] + [c for c in cuts if a + 0.05 < c < b - 0.05] + [b]
             for p0, p1 in zip(pts, pts[1:]):
                 mid = (p0 + p1) / 2; tag = next((n for n, (wa, wb) in self.windows.items() if wa <= mid < wb), "")
+                if self.bw and self.bw[0] <= mid < self.bw[1]: tag = "bw"
+                if int(round(p0 * FPS)) in self.flicker: tag = "flicker"
                 pieces.append((p0, p1, tag))
         return pieces
     def layers(self, LD=None, cutout=True):
@@ -606,9 +852,15 @@ class Edit:
             fn = f"{LD}/01_{p0:05.2f}s_TAKE{('_' + tag) if tag else ''}.mp4"
             if os.path.exists(fn): continue
             i0, i1 = int(round(p0 * FPS)), int(round(p1 * FPS)); n = i1 - i0
-            pipe(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-", "-ss", f"{i0 / FPS:.4f}", "-t", f"{n / FPS:.4f}", "-i", self.video,
-                  "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "slow", "-crf", "14", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", "-af", "apad", "-t", f"{n / FPS:.6f}", fn],
-                 lambda k, i0=i0: self.load(i0 + k).tobytes(), n)
+            if self.frames4k and tag != "flicker":                      # 4K take pieces: CapCut's own scale keyframes crop from the full-res source
+                def tk(k, i0=i0):
+                    i = i0 + k; return self.graded(Image.open(f"{self.frames4k}/{i + 1:05d}.jpg").convert("RGB"), i).tobytes()
+                size = Image.open(f"{self.frames4k}/00001.jpg").size; src = self.video4k
+            else:
+                def tk(k, i0=i0): return self.load(i0 + k).tobytes()
+                size = (W, H); src = self.video
+            pipe(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{size[0]}x{size[1]}", "-r", str(FPS), "-i", "-", "-ss", f"{i0 / FPS:.4f}", "-t", f"{n / FPS:.4f}", "-i", src,
+                  "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-preset", "medium", "-crf", "15", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "256k", "-af", "apad", "-t", f"{n / FPS:.6f}", fn], tk, n, workers=6)
             print("  wrote", os.path.basename(fn))
         cut = f"{LD}/03_00.00s_CUTOUT_alpha.mov"
         if cutout and os.path.isdir(self.masks) and not os.path.exists(cut):
@@ -617,6 +869,7 @@ class Edit:
             pipe(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-", "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-q:v", "11", "-vendor", "apl0", cut], co, self.nfr)
             print("  wrote cutout")
         write_wav(f"{LD}/05_00.00s_SFX.wav", mix_track(self.dur, self.sfx_events()))
+        if self.cuelist: write_wav(f"{LD}/06_00.00s_SFX_caption-ticks.wav", mix_track(self.dur, self.caption_tick_events()))
         for c in self.clips:
             if c["layer"] == "text": continue
             tag = "02" if c["layer"] == "back" else "04"; fn = f"{LD}/{tag}_{c['t0']:05.2f}s_{c['name']}_{'BACK' if c['layer'] == 'back' else 'FRONT'}_alpha.mov"
@@ -625,7 +878,7 @@ class Edit:
             pipe(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-", "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-vendor", "apl0", fn],
                  lambda i, f=f: premul(f(i / FPS)).tobytes(), n)
             print(f"  wrote {os.path.basename(fn)}  {c['dur']:.2f}s")
-        json.dump({"punch": self.punch, "push": self.push, "blurb": self.blurb, "cues": self.cuelist, "fps": FPS}, open(f"{LD}/meta.json", "w"))
+        json.dump({"punch": self.punch, "push": self.push, "zoom_keys": self.zoom_keys(), "blurb": self.blurb, "cues": self.cuelist, "fps": FPS}, open(f"{LD}/meta.json", "w"))
         print("layers done", LD)
     def run(self, argv, check_ts):
         mode = argv[1] if len(argv) > 1 else "times"
@@ -633,3 +886,6 @@ class Edit:
         elif mode == "check": self.check(check_ts)
         elif mode == "preview": self.preview()
         elif mode == "layers": self.layers()
+        elif mode == "sound": self.sound()
+        elif mode == "head": self.head(float(argv[2]) if len(argv) > 2 else (self.blurb[1] if self.blurb else 3.0))
+        elif mode == "audition": self.audition(getattr(self, "audition_list", []))
